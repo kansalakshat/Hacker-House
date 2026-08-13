@@ -1,69 +1,72 @@
-import Image from "next/image";
+import { Journey } from "@/components/Journey";
+import { Studio } from "@/components/Studio";
+import { EVENT } from "@/lib/render";
+import { MODELS } from "@/lib/models";
 
 export default function Home() {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <main>
+      <a
+        href="#studio"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-3 focus:left-3 focus:z-50 focus:rounded-full focus:bg-yellow focus:px-5 focus:py-3 focus:font-mono focus:text-sm focus:font-bold focus:text-ink"
+      >
+        Skip to the generator
+      </a>
+
+      <Journey />
+
+      <Studio />
+
+      <footer className="relative isolate overflow-hidden border-t-2 border-line">
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 -z-10 bg-[url('/night-trees.webp')] bg-cover bg-center opacity-70"
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
+        <div aria-hidden="true" className="absolute inset-0 -z-10 bg-ink/70" />
+        <div className="mx-auto flex max-w-6xl flex-col gap-6 px-5 py-14 sm:flex-row sm:items-end sm:justify-between sm:px-8">
+          <p className="display max-w-md text-4xl text-yellow sm:text-5xl">
+            {EVENT.motto}
+          </p>
+          <div className="flex flex-col gap-2 font-mono text-xs text-cream">
             <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              href="https://hhgoa.com"
+              className="underline underline-offset-4 hover:text-yellow"
             >
-              Templates
-            </a>{" "}
-            or the{" "}
+              {EVENT.site}
+            </a>
             <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
+              href={`https://x.com/search?q=${encodeURIComponent(EVENT.tag)}`}
+              className="underline underline-offset-4 hover:text-yellow"
             >
-              Learning
-            </a>{" "}
-            center.
+              {EVENT.tag} on X
+            </a>
+            <span className="max-w-xs text-sea">
+              Your photo stays in the browser. Only the graphic you share to X
+              gets uploaded.
+            </span>
+          </div>
+        </div>
+
+        {/* Model attribution, off the scene and down here where credits belong. */}
+        <div className="mx-auto max-w-6xl px-5 pb-10 sm:px-8">
+          <p className="border-t border-line pt-6 font-mono text-[10px] leading-relaxed text-sea/80">
+            <span className="text-sea">3D models · </span>
+            {MODELS.map((c, i) => (
+              <span key={c.slot}>
+                {i > 0 && " · "}
+                {c.url ? (
+                  <a href={c.url} className="underline underline-offset-2 hover:text-yellow">
+                    {c.title}
+                  </a>
+                ) : (
+                  c.title
+                )}
+                {c.author && ` by ${c.author}`} ({c.license})
+              </span>
+            ))}
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      </footer>
+    </main>
   );
 }
