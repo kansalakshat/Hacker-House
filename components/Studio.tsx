@@ -7,7 +7,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import dynamic from "next/dynamic";
 import { AnimatePresence, motion, useInView, useReducedMotion } from "motion/react";
@@ -59,23 +58,6 @@ const HINTS = [
   "Every pass gets its own builder title. Reroll until one fits.",
   "Drag the preview to move the shot, drag the slider to zoom.",
 ];
-
-/* Whether this browser can hand the PNG straight to the X app. Probed once,
-   client only, so the server render and the first client render agree. */
-let sharesFiles: boolean | null = null;
-const noSubscribe = () => () => {};
-function canShareFiles() {
-  if (sharesFiles === null) {
-    try {
-      sharesFiles = !!navigator.canShare?.({
-        files: [new File([new Blob()], "probe.png", { type: "image/png" })],
-      });
-    } catch {
-      sharesFiles = false;
-    }
-  }
-  return sharesFiles;
-}
 
 /**
  * Put the PNG on the clipboard so it can be pasted into an X post as a real
@@ -304,13 +286,12 @@ export function Studio() {
   /** The landscape art, so an X card is never a letterboxed portrait. */
   const shareCanvas = () => (portraitBadge ? shareRef.current : viewRef.current);
 
-  const canNativeShare = useSyncExternalStore(noSubscribe, canShareFiles, () => false);
-
   /**
    * X web intents have no media parameter, so the PNG can never travel in the
-   * URL. Three ways in, best first: the share sheet hands the file straight to
-   * the X app, the clipboard lets it be pasted as a real attachment, and the
-   * hosted link is only a card - which is what "not attached" looked like.
+   * URL. The clipboard carries it instead and one paste attaches it for real.
+   * The share sheet would also carry the file, but it opens the OS app picker
+   * rather than X, so this goes to X directly and pays for it with the paste.
+   * Browsers that refuse image writes fall back to a hosted link card.
    */
   const shareToX = async () => {
     const text = caption();
@@ -320,26 +301,16 @@ export function Studio() {
     // needs the landscape redraw, and only to avoid a letterboxed card.
     const art = viewRef.current;
 
-    if (art && canNativeShare) {
-      const blob = await toPngBlob(art);
-      const file = new File([blob], `${fileStem}.png`, { type: "image/png" });
-      try {
-        await navigator.share({ files: [file], text });
-        return;
-      } catch (e) {
-        // Dismissing the sheet is a decision, not a failure: don't then go and
-        // open X behind their back. Anything else falls through.
-        if (e instanceof Error && e.name === "AbortError") return;
-      }
-    }
-
     // Must happen before any window opens: clipboard writes are rejected the
     // moment this document loses focus.
     if (art && (await copyPng(art))) {
       setError({
         ok: true,
-        text: "Pass copied. Press Ctrl+V (⌘V on Mac) in the post to attach it.",
+        text: "Pass copied. Paste it into the post to attach it: Ctrl+V, ⌘V, or long-press the box on mobile.",
       });
+      // A plain x.com link, not the twitter:// scheme: universal links hand
+      // straight to the app when it is installed and quietly stay on the web
+      // when it is not, where a custom scheme would dead-end.
       window.open(
         `https://x.com/intent/post?text=${encodeURIComponent(text)}`,
         "_blank",
