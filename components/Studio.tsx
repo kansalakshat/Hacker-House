@@ -77,6 +77,26 @@ function canShareFiles() {
   return sharesFiles;
 }
 
+/**
+ * Put the PNG on the clipboard so it can be pasted into an X post as a real
+ * attachment. ClipboardItem takes the promise rather than the resolved blob:
+ * Safari only honours a write whose data was requested inside the gesture.
+ */
+async function copyPng(canvas: HTMLCanvasElement) {
+  try {
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      return false;
+    }
+    await navigator.clipboard.write([
+      new ClipboardItem({ "image/png": toPngBlob(canvas) }),
+    ]);
+    return true;
+  } catch {
+    // Firefox refuses image writes, and any browser refuses an unfocused one.
+    return false;
+  }
+}
+
 /* ------------------------------------------------------------ photo intake */
 
 /**
@@ -152,7 +172,9 @@ export function Studio() {
   const revision = useRef(0);
   const [fontsOk, setFontsOk] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // Tagged rather than two states, so a success note and a failure can never
+  // sit on screen contradicting each other.
+  const [error, setError] = useState<{ ok: boolean; text: string } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [hint, setHint] = useState(0);
 
@@ -211,7 +233,10 @@ export function Studio() {
       });
       setCrop(CROP0);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not read that photo.");
+      setError({
+        ok: false,
+        text: e instanceof Error ? e.message : "Could not read that photo.",
+      });
     } finally {
       setBusy(null);
     }
@@ -279,12 +304,53 @@ export function Studio() {
   /** The landscape art, so an X card is never a letterboxed portrait. */
   const shareCanvas = () => (portraitBadge ? shareRef.current : viewRef.current);
 
+  const canNativeShare = useSyncExternalStore(noSubscribe, canShareFiles, () => false);
+
+  /**
+   * X web intents have no media parameter, so the PNG can never travel in the
+   * URL. Three ways in, best first: the share sheet hands the file straight to
+   * the X app, the clipboard lets it be pasted as a real attachment, and the
+   * hosted link is only a card - which is what "not attached" looked like.
+   */
   const shareToX = async () => {
+    const text = caption();
+    setError(null);
+
+    // A real attachment should be the art as designed. Only the OG-card path
+    // needs the landscape redraw, and only to avoid a letterboxed card.
+    const art = viewRef.current;
+
+    if (art && canNativeShare) {
+      const blob = await toPngBlob(art);
+      const file = new File([blob], `${fileStem}.png`, { type: "image/png" });
+      try {
+        await navigator.share({ files: [file], text });
+        return;
+      } catch (e) {
+        // Dismissing the sheet is a decision, not a failure: don't then go and
+        // open X behind their back. Anything else falls through.
+        if (e instanceof Error && e.name === "AbortError") return;
+      }
+    }
+
+    // Must happen before any window opens: clipboard writes are rejected the
+    // moment this document loses focus.
+    if (art && (await copyPng(art))) {
+      setError({
+        ok: true,
+        text: "Pass copied. Press Ctrl+V (⌘V on Mac) in the post to attach it.",
+      });
+      window.open(
+        `https://x.com/intent/post?text=${encodeURIComponent(text)}`,
+        "_blank",
+        "noopener",
+      );
+      return;
+    }
+
     // Opened synchronously so mobile Safari does not swallow it as a popup.
     const win = window.open("", "_blank");
-    const text = caption();
     setBusy("Building your link");
-    setError(null);
     let link = "";
     let why = "";
     try {
@@ -313,29 +379,23 @@ export function Studio() {
 
     const intent = new URL("https://x.com/intent/post");
     intent.searchParams.set("text", text);
-    if (link) intent.searchParams.set("url", link);
-    else {
-      // X intents cannot carry a file, so with no hosted image there is no way
-      // to attach it for them. Hand them the PNG instead of just apologising.
+    if (link) {
+      intent.searchParams.set("url", link);
+      setError({
+        ok: true,
+        text: "This browser cannot copy images, so the post carries a link preview of your pass instead.",
+      });
+    } else {
+      // Nothing left that can carry the image, so hand them the file to attach
+      // by hand rather than just apologising.
       download();
-      setError(`${why} The post has text only, so we downloaded the PNG for you to attach.`);
+      setError({
+        ok: false,
+        text: `${why} The post has text only, so we downloaded the PNG for you to attach.`,
+      });
     }
     if (win) win.location.href = intent.toString();
     else window.location.href = intent.toString();
-  };
-
-  const canNativeShare = useSyncExternalStore(noSubscribe, canShareFiles, () => false);
-
-  const shareNative = async () => {
-    const canvas = viewRef.current;
-    if (!canvas) return;
-    const blob = await toPngBlob(canvas);
-    const file = new File([blob], `${fileStem}.png`, { type: "image/png" });
-    try {
-      await navigator.share({ files: [file], text: caption() });
-    } catch {
-      // user dismissed the sheet
-    }
   };
 
   /* ------------------------------------------------------------- markup */
@@ -630,10 +690,16 @@ export function Studio() {
           {error && (
             <p
               role="status"
-              className="flex items-start gap-2 rounded-xl border-2 border-pink bg-deep p-4 font-mono text-sm text-cream"
+              className={`flex items-start gap-2 rounded-xl border-2 bg-deep p-4 font-mono text-sm text-cream ${
+                error.ok ? "border-yellow" : "border-pink"
+              }`}
             >
-              <WarningIcon size={18} weight="bold" aria-hidden="true" className="mt-0.5 shrink-0 text-pink" />
-              {error}
+              {error.ok ? (
+                <SparkleIcon size={18} weight="fill" aria-hidden="true" className="mt-0.5 shrink-0 text-yellow" />
+              ) : (
+                <WarningIcon size={18} weight="bold" aria-hidden="true" className="mt-0.5 shrink-0 text-pink" />
+              )}
+              {error.text}
             </p>
           )}
 
@@ -656,20 +722,10 @@ export function Studio() {
               <XLogoIcon size={16} weight="bold" aria-hidden="true" />
               Share to X
             </button>
-            {canNativeShare && (
-              <button
-                type="button"
-                onClick={shareNative}
-                disabled={!hasArt}
-                className="cursor-pointer rounded-full border-2 border-outline bg-sand px-5 py-3 font-mono text-xs font-bold tracking-widest text-ink uppercase hover:bg-yellow disabled:bg-panel disabled:text-sea"
-              >
-                Share image directly
-              </button>
-            )}
             <p className="flex items-start gap-2 font-mono text-xs leading-relaxed text-sea">
               <SparkleIcon size={14} weight="fill" aria-hidden="true" className="mt-0.5 shrink-0 text-pink" />
-              Share to X opens a pre-written post with {EVENT.tag}. The link
-              preview carries this exact graphic.
+              Share to X opens a pre-written post with {EVENT.tag} and puts your
+              pass on the clipboard, so one paste attaches it.
             </p>
           </div>
         </div>
