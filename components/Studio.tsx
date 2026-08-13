@@ -286,6 +286,7 @@ export function Studio() {
     setBusy("Building your link");
     setError(null);
     let link = "";
+    let why = "";
     try {
       const canvas = shareCanvas();
       if (canvas) {
@@ -298,10 +299,14 @@ export function Studio() {
         if (res.ok) {
           const { id } = (await res.json()) as { id: string };
           link = `${location.origin}/s/${id}`;
+        } else {
+          // The route explains itself (missing blob token, too large, not a
+          // PNG). Swallowing that turned every failure into the same shrug.
+          why = ((await res.json().catch(() => null)) as { error?: string } | null)?.error ?? `Upload failed (${res.status}).`;
         }
       }
     } catch {
-      // fall through: a text-only post still beats a dead button
+      why = "Could not reach the server.";
     } finally {
       setBusy(null);
     }
@@ -310,7 +315,10 @@ export function Studio() {
     intent.searchParams.set("text", text);
     if (link) intent.searchParams.set("url", link);
     else {
-      setError("Could not host the preview image, so the post has text only. Download and attach it.");
+      // X intents cannot carry a file, so with no hosted image there is no way
+      // to attach it for them. Hand them the PNG instead of just apologising.
+      download();
+      setError(`${why} The post has text only, so we downloaded the PNG for you to attach.`);
     }
     if (win) win.location.href = intent.toString();
     else window.location.href = intent.toString();

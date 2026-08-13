@@ -8,7 +8,9 @@ const ID = /^[a-f0-9]{12}$/;
 
 /** Resolve a share id to its hosted PNG. Returns null for anything unknown. */
 async function imageUrl(raw: string) {
-  if (!ID.test(raw) || !process.env.BLOB_READ_WRITE_TOKEN) return null;
+  // No env gate: the store may be wired by token or by OIDC, and head() already
+  // fails closed into the catch when neither is available.
+  if (!ID.test(raw)) return null;
   try {
     const blob = await head(`f/${raw}.png`);
     return blob.url;

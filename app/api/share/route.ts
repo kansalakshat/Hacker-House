@@ -21,20 +21,23 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Expected a PNG." }, { status: 415 });
   }
 
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+  // Don't second-guess how the store is wired. A connected Blob store may hand
+  // us BLOB_READ_WRITE_TOKEN or OIDC (VERCEL_OIDC_TOKEN + BLOB_STORE_ID);
+  // gating on the token alone rejected the OIDC setup as "not configured".
+  const id = randomBytes(6).toString("hex");
+  try {
+    await put(`f/${id}.png`, Buffer.from(bytes), {
+      access: "public",
+      contentType: "image/png",
+      addRandomSuffix: false,
+      cacheControlMaxAge: 31536000,
+    });
+  } catch (e) {
     return NextResponse.json(
-      { error: "Sharing is not configured: BLOB_READ_WRITE_TOKEN is missing." },
+      { error: e instanceof Error ? e.message : "Could not store the image." },
       { status: 503 },
     );
   }
-
-  const id = randomBytes(6).toString("hex");
-  await put(`f/${id}.png`, Buffer.from(bytes), {
-    access: "public",
-    contentType: "image/png",
-    addRandomSuffix: false,
-    cacheControlMaxAge: 31536000,
-  });
 
   return NextResponse.json({ id });
 }
