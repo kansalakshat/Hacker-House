@@ -1,14 +1,28 @@
 @import "tailwindcss";
 
+/* One hue, four steps. The surfaces used to be near-black (#061a18), which read
+   as a dark app rather than the brand's flat green poster. Cards and wells are
+   now the same 152 degrees as the base, just seated deeper, so #0B6839 is what
+   the page actually looks like.
+
+   Contrast against the base, measured, not guessed: cream 6.6:1, yellow 5.3:1,
+   sea 4.8:1 - all pass for body text. Pink is 1.8:1 and CANNOT carry text on
+   green; it is a border, a fill, and a mark only. */
 @theme {
-  --color-ink: #03080a;
-  --color-deep: #061a18;
-  --color-panel: #0a2a22;
-  --color-line: #12503c;
+  --color-ink: #0B6839;   /* page base */
+  --color-deep: #08542d;  /* raised card */
+  --color-panel: #064424; /* recessed input well */
+  --color-line: #2e8f5b;  /* structure */
   --color-yellow: #fee13c;
   --color-pink: #ff0080;
-  --color-cream: #eaf6ef;
-  --color-sea: #7fd3b0;
+  --color-cream: #FFFBE8;
+  --color-sea: #a9e5c8;
+
+  /* Pulled off the house illustration, which is where the pass gets its
+     colour from. Ink on sand measures 4.9:1, so sand can carry small type;
+     outline is the heavy keyline every shape in that artwork is drawn with. */
+  --color-sand: #F0D799;
+  --color-outline: #0A1A10;
 
   --font-display: var(--font-imbue), Georgia, serif;
   --font-mono: var(--font-victor), ui-monospace, monospace;
@@ -55,6 +69,31 @@ input[type="range"] {
 /* The wordmark treatment from hhgoa.com: flat fill, hard offset shadow. */
 .stamp {
   text-shadow: 0.05em 0.05em 0 var(--stamp, var(--color-ink));
+}
+
+/* The two shapes the house illustration is built from, so the page and the
+   generated pass are drawn in the same language. Both are one gradient over a
+   flat fill; the heavy keyline comes from the element's own border. */
+
+/* Louvered shutter: horizontal slats. */
+.slats {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--color-outline) 0 2px,
+    transparent 2px 9px
+  );
+}
+
+/* Terracotta roof: vertical tile ribs stopping short of the eave. */
+.tiles {
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--color-outline) 0 2px,
+    transparent 2px 16px
+  );
+  background-size: 100% 72%;
+  background-repeat: no-repeat;
+  box-shadow: inset 0 -0.7rem 0 -0.6rem var(--color-outline);
 }
 
 :where(a, button, input, select, [tabindex]):focus-visible {

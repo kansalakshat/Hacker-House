@@ -13,17 +13,17 @@
  * credited in the UI via `onScenery`.
  */
 
-import { Suspense, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Suspense, useEffect, useMemo, useRef, type RefObject } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Float, RoundedBox, useAnimations, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 
 const YELLOW = "#fee13c";
-const INK = "#03080a";
+const INK = "#0B6839";
 const PINK = "#ff0080";
 
 export type Credit = {
-  key: "palm" | "water" | "kit" | "scene";
+  key: "palm" | "water" | "kit";
   file: string;
   title: string;
   author: string;
@@ -47,14 +47,6 @@ export const MODELS: Credit[] = [
     author: "Artise1",
     license: "CC BY 4.0",
     url: "https://sketchfab.com/3d-models/water-animation-e54ff76bef854b128af8d20cf9c03729",
-  },
-  {
-    key: "scene",
-    file: "/beach-scan.glb",
-    title: "Ibiza Benirras Beach at Sunset",
-    author: "Miguelangelo Rosario",
-    license: "CC BY 4.0",
-    url: "https://sketchfab.com/3d-models/ibiza-benirras-beach-at-sunset-9298c3a7f2384a93ae8f387ae99a85a1",
   },
   {
     key: "kit",
@@ -157,17 +149,6 @@ function BeachKit({ url }: { url: string }) {
   );
 }
 
-/** A whole scanned environment, pushed back so the card still reads. */
-function Scanned({ url }: { url: string }) {
-  const { scene } = useGLTF(url);
-  const model = useMemo(() => normalise(scene.clone(true), 26, "x", true), [scene]);
-  return (
-    <group position={[0, -2.4, -9]}>
-      <primitive object={model} />
-    </group>
-  );
-}
-
 function Card({
   sourceRef,
   revision,
@@ -262,52 +243,63 @@ function Card({
   );
 }
 
+/**
+ * Reports that the card is actually on screen. Inside the Suspense boundary, so
+ * it mounts only once every model has loaded, and it waits for the shaders on
+ * top of that. Until then the flat canvas underneath stays visible instead of
+ * an empty hole where the card will be.
+ */
+function Ready({ onReady }: { onReady: () => void }) {
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const camera = useThree((s) => s.camera);
+
+  useEffect(() => {
+    let live = true;
+    const go = () => live && onReady();
+    gl.compileAsync(scene, camera).then(go, go);
+    return () => {
+      live = false;
+    };
+  }, [gl, scene, camera, onReady]);
+
+  return null;
+}
+
 export default function PassScene({
   sourceRef,
   revision,
   aspect,
   still = false,
   onScenery,
+  onReady,
 }: {
   sourceRef: RefObject<HTMLCanvasElement | null>;
   revision: RefObject<number>;
   aspect: number;
   still?: boolean;
   onScenery?: (loaded: Credit[]) => void;
+  onReady?: () => void;
 }) {
-  const [present, setPresent] = useState<Credit[]>([]);
-
-  // Only mount loaders for models that have actually been dropped in.
+  // MODELS is the list, so the credits are known without asking the network:
+  // this used to HEAD-probe every file first, which delayed the models by a
+  // round trip and kept a stale entry for a file that was never shipped.
   useEffect(() => {
-    let live = true;
-    Promise.all(
-      MODELS.map(async (m) => {
-        try {
-          const r = await fetch(m.file, { method: "HEAD" });
-          const html = (r.headers.get("content-type") || "").includes("text/html");
-          return r.ok && !html ? m : null;
-        } catch {
-          return null;
-        }
-      }),
-    ).then((found) => {
-      if (!live) return;
-      const list = found.filter(Boolean) as Credit[];
-      setPresent(list);
-      onScenery?.(list);
-    });
-    return () => {
-      live = false;
-    };
+    onScenery?.(MODELS);
   }, [onScenery]);
 
-  const has = (k: Credit["key"]) => present.find((m) => m.key === k);
+  const has = (k: Credit["key"]) => MODELS.find((m) => m.key === k);
 
   return (
     <Canvas
       dpr={[1, 2]}
       camera={{ position: [0, 0, 4.2], fov: 42 }}
       gl={{ antialias: true, alpha: true }}
+      // Same stall as the beach: reading each program's link status blocks
+      // until the driver is done. Checked in dev, skipped in the build.
+      onCreated={({ gl }) => {
+        gl.debug.checkShaderErrors = process.env.NODE_ENV !== "production";
+      }}
     >
       <ambientLight intensity={0.75} />
       <directionalLight position={[3, 4, 5]} intensity={2.1} />
@@ -315,7 +307,6 @@ export default function PassScene({
       <pointLight position={[3.5, 2, -1.5]} intensity={14} color={PINK} distance={12} />
 
       <Suspense fallback={null}>
-        {has("scene") && <Scanned url={has("scene")!.file} />}
         {has("water") && <Water url={has("water")!.file} still={still} />}
         {has("kit") && <BeachKit url={has("kit")!.file} />}
         {has("palm") && <Palms url={has("palm")!.file} still={still} />}
@@ -327,6 +318,7 @@ export default function PassScene({
         >
           <Card sourceRef={sourceRef} revision={revision} aspect={aspect} still={still} />
         </Float>
+        {onReady && <Ready onReady={onReady} />}
       </Suspense>
     </Canvas>
   );

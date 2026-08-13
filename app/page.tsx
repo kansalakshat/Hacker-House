@@ -1,9 +1,18 @@
+import ReactDOM from "react-dom";
 import { Journey } from "@/components/Journey";
 import { Studio } from "@/components/Studio";
 import { EVENT } from "@/lib/render";
 import { MODELS } from "@/lib/models";
 
 export default function Home() {
+  // The models are the long pole, and nothing used to ask for them until the
+  // three.js chunk had downloaded and the canvas had mounted. Preloading from
+  // the document head starts them with the HTML instead, seconds earlier, at
+  // low priority so the scripts and fonts still win the pipe first.
+  for (const m of MODELS) {
+    ReactDOM.preload(m.file, { as: "fetch", fetchPriority: "low" });
+  }
+
   return (
     <main>
       <a

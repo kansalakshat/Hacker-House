@@ -22,7 +22,6 @@ import Lenis from "lenis";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { EVENT } from "@/lib/render";
-import { MODELS } from "@/lib/models";
 
 const BeachScene = dynamic(() => import("@/components/BeachScene"), {
   ssr: false,
@@ -75,13 +74,18 @@ export function Journey() {
   /* --- hold the canvas back on real signals, not a fake timer --- */
   useEffect(() => {
     let n = 0;
-    const total = 3;
+    const total = 2;
     const step = () => setLoaded(Math.round((++n / total) * 100));
 
+    // Pull the scene chunk now rather than when the canvas mounts. next/dynamic
+    // only starts that download once `done` flips, which put a 250KB fetch in
+    // front of the models the moment the still was ready to lift; warming it
+    // here overlaps it with the wait instead. The models themselves are already
+    // in flight from the preloads in the page head, so there is nothing to
+    // probe for here: the canvas holds on the still's own floor and hands over
+    // when BeachScene reports the models are actually up.
+    import("@/components/BeachScene").catch(() => {});
     document.fonts.ready.then(step).catch(step);
-    Promise.all(
-      MODELS.map((m) => fetch(m.file, { method: "HEAD" }).catch(() => null)),
-    ).then(step);
     // A floor, so the still holds for a moment instead of flashing past.
     const floor = setTimeout(step, 900);
     return () => clearTimeout(floor);

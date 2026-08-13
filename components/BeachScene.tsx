@@ -11,8 +11,16 @@
  * state, so scrubbing costs no re-renders.
  */
 
-import { Suspense, useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Canvas, useFrame, useLoader } from "@react-three/fiber";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
+import { Canvas, useFrame, useLoader, useThree } from "@react-three/fiber";
 import { useAnimations, useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { MODELS, type Credit, type Slot } from "@/lib/models";
@@ -20,7 +28,7 @@ import { MODELS, type Credit, type Slot } from "@/lib/models";
 const YELLOW = new THREE.Color("#fee13c");
 const PINK = new THREE.Color("#ff0080");
 const SEA = new THREE.Color("#2f7fae");
-const INK = new THREE.Color("#03080a");
+const INK = new THREE.Color("#0B6839");
 
 /* ---------------------------------------------------------------- assets */
 
@@ -30,28 +38,15 @@ const INK = new THREE.Color("#03080a");
 export { MODELS };
 export type { Slot, Credit };
 
-/** HEAD-probe every slot once; 404s simply mean that layer stays procedural. */
-export function usePresentModels() {
-  const [present, setPresent] = useState<Credit[]>([]);
-  useEffect(() => {
-    let live = true;
-    Promise.all(
-      MODELS.map(async (m) => {
-        try {
-          const r = await fetch(m.file, { method: "HEAD" });
-          const html = (r.headers.get("content-type") || "").includes("text/html");
-          return r.ok && !html ? m : null;
-        } catch {
-          return null;
-        }
-      }),
-    ).then((f) => live && setPresent(f.filter(Boolean) as Credit[]));
-    return () => {
-      live = false;
-    };
-  }, []);
-  return present;
-}
+/**
+ * The file for a slot, or undefined if that slot has no model and the layer
+ * stays procedural. MODELS is the switch: a slot listed there is a slot that
+ * renders. There used to be a HEAD probe here confirming each file existed,
+ * which cost a full round trip after the chunk mounted before the first byte
+ * of any model was requested. The entry in lib/models says the same thing for
+ * free.
+ */
+const fileFor = (s: Slot) => MODELS.find((m) => m.slot === s)?.file;
 
 /* ------------------------------------------------------------- placement */
 
@@ -692,9 +687,42 @@ function Rig({ progress, still }: { progress: RefObject<number>; still: boolean 
  * is anything to look at.
  */
 function Ready({ onReady }: { onReady?: () => void }) {
+  const gl = useThree((s) => s.gl);
+  const scene = useThree((s) => s.scene);
+  const camera = useThree((s) => s.camera);
+  const setFrameloop = useThree((s) => s.setFrameloop);
+  const invalidate = useThree((s) => s.invalidate);
+
   useEffect(() => {
-    onReady?.();
-  }, [onReady]);
+    let live = true;
+    // NB: setFrameloop alone is not enough. r3f re-applies the Canvas's
+    // frameloop prop on every reconcile, so the onReady state update below
+    // would reset it to "never" and stop the loop again on the next frame -
+    // which froze the scene and left scroll scrubbing a camera nobody drew.
+    // The prop is driven off the same signal; see `running` in BeachScene.
+    //
+    // The scene needs sixteen shader programs and the driver takes about
+    // 130ms over each. Render immediately and three reads their uniforms one
+    // at a time, and every read blocks until that program has finished
+    // linking: two seconds of frozen main thread. Left alone the driver links
+    // them all at once on its own threads, so the loop stays off (the still is
+    // over the canvas anyway) until compileAsync says they are ready.
+    const go = () => {
+      if (!live) return;
+      // setFrameloop only writes the mode and restarts the clock. The render
+      // loop itself stopped when the canvas mounted on "never", and nothing
+      // starts it again until something asks for a frame, so scroll would
+      // scrub a camera nobody was drawing.
+      setFrameloop("always");
+      invalidate();
+      onReady?.();
+    };
+    gl.compileAsync(scene, camera).then(go, go);
+    return () => {
+      live = false;
+    };
+  }, [gl, scene, camera, setFrameloop, invalidate, onReady]);
+
   return null;
 }
 
@@ -719,19 +747,32 @@ export default function BeachScene({
   still?: boolean;
   onReady?: () => void;
 }) {
-  const present = usePresentModels();
-  const get = (s: Slot) => present.find((m) => m.slot === s)?.file;
+  const get = fileFor;
+  // Off until the shaders are linked; Ready flips this. It has to be the prop
+  // and not just setFrameloop, because r3f re-applies the prop on reconcile.
+  const [running, setRunning] = useState(false);
+  const ready = useCallback(() => {
+    setRunning(true);
+    onReady?.();
+  }, [onReady]);
 
   return (
     <Canvas
       dpr={[1, 1.75]}
+      frameloop={running ? "always" : "never"}
       // fov 40, not 46: at 46 a near object at the edge of frame splays visibly
       // away from centre, which read as the shacks leaning. A longer lens keeps
       // their walls vertical.
       camera={{ position: [0, 4.2, 26], fov: BASE_FOV, near: 0.1, far: 700 }}
       gl={{ antialias: true, powerPreference: "high-performance" }}
-      onCreated={({ scene }) => {
+      onCreated={({ scene, gl }) => {
         scene.fog = new THREE.Fog(0xa9c6d6, 300, 640);
+        // three reads LINK_STATUS and the info log the first time each program
+        // is used, which blocks the main thread until the driver has finished
+        // linking it. Across this many materials that is seconds of stall on
+        // the frame the models land. Keep the check in dev, where a broken
+        // shader should say so; drop it in the build users get.
+        gl.debug.checkShaderErrors = process.env.NODE_ENV !== "production";
       }}
     >
       {/* Matched to the dusky blue at the top of sunset.jpg, not a pale sky blue:
@@ -818,9 +859,9 @@ export default function BeachScene({
           />
         )}
         {get("palm") && <Palms url={get("palm")!} />}
-        {/* Last, and only once the probe has answered: with no models listed the
-            children above suspend on nothing and would report ready instantly. */}
-        {present.length > 0 && <Ready onReady={onReady} />}
+        {/* Last, and only if something above it can suspend: with no models
+            listed it would report ready instantly. */}
+        {MODELS.length > 0 && <Ready onReady={ready} />}
       </Suspense>
     </Canvas>
   );

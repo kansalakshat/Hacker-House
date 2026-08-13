@@ -7,15 +7,18 @@
  * pink as the only lit colours.
  */
 
+/** Mirrors the @theme block in app/globals.css. Keep the two in step. */
 export const C = {
-  ink: "#03080a",
-  deep: "#061a18",
-  panel: "#0a2a22",
-  line: "#12503c",
+  ink: "#0B6839",
+  deep: "#08542d",
+  panel: "#064424",
+  line: "#2e8f5b",
   yellow: "#fee13c",
   pink: "#ff0080",
-  cream: "#eaf6ef",
-  sea: "#7fd3b0",
+  cream: "#FFFBE8",
+  sea: "#a9e5c8",
+  sand: "#F0D799",    /* the ground the house sits on */
+  outline: "#0A1A10", /* the keyline every shape in the artwork is drawn with */
 } as const;
 
 export const EVENT = {
@@ -57,9 +60,10 @@ export async function readyFonts() {
 /* ------------------------------------------------------------------- art */
 
 export const ART_FILES = {
-  sunrise: "/night-sunrise.webp",
-  trees: "/night-trees.webp",
-  hackers: "/night-hackers.webp",
+  /* The event's own house illustration: pink tile roof, louvered shutters,
+     bougainvillea, palms, builders at the long table. Every colour on the pass
+     is pulled out of it. */
+  house: "/house.webp",
   lockup: "/lockup.svg",
   goa: "/goa.svg",
   qr: "/qr.png",
@@ -160,27 +164,6 @@ function mark(
   return w;
 }
 
-/** Display text with the hard offset shadow from the HH Goa wordmark. */
-function stamp(
-  ctx: Ctx,
-  text: string,
-  x: number,
-  y: number,
-  size: number,
-  fill: string,
-  shadow: string,
-  align: CanvasTextAlign = "left",
-) {
-  ctx.font = D(size);
-  ctx.textAlign = align;
-  ctx.textBaseline = "alphabetic";
-  const off = Math.max(3, size * 0.045);
-  ctx.fillStyle = shadow;
-  ctx.fillText(text, x + off, y + off);
-  ctx.fillStyle = fill;
-  ctx.fillText(text, x, y);
-}
-
 /** Largest size <= `start` at which `text` fits `maxW`. */
 function fitDisplay(ctx: Ctx, text: string, maxW: number, start: number) {
   let size = start;
@@ -200,35 +183,121 @@ function truncate(ctx: Ctx, text: string, maxW: number) {
   return out + "…";
 }
 
-/**
- * Lay `text` along a circle. `dir` is +1 for the top of the ring (reads
- * left to right clockwise) and -1 for the bottom.
- */
-function arcText(
-  ctx: Ctx,
-  text: string,
-  cx: number,
-  cy: number,
-  r: number,
-  centerAngle: number,
-  dir: 1 | -1,
-  tracking = 0,
-) {
-  const chars = [...text];
-  const widths = chars.map((ch) => ctx.measureText(ch).width + tracking);
-  const total = widths.reduce((a, b) => a + b, 0);
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  let angle = centerAngle - (dir * total) / (2 * r);
-  for (let i = 0; i < chars.length; i++) {
-    const a = angle + (dir * (widths[i] / 2)) / r;
-    ctx.save();
-    ctx.translate(cx + r * Math.cos(a), cy + r * Math.sin(a));
-    ctx.rotate(a + (dir > 0 ? Math.PI / 2 : -Math.PI / 2));
-    ctx.fillText(chars[i], 0, 0);
-    ctx.restore();
-    angle += (dir * widths[i]) / r;
+/* ------------------------------------------------------ the scenery, drawn */
+/* Lifted off the event illustration so the pass is built out of the same
+   shapes: a terracotta roof, a sand bank, coconut palms. Every one is a heavy
+   black keyline over a flat fill, which is the whole look. */
+
+/** Keyline weight, scaled off the shape so it holds at any size. */
+function keyline(ctx: Ctx, px: number) {
+  ctx.strokeStyle = C.outline;
+  ctx.lineWidth = Math.max(2, px);
+}
+
+/** A run of terracotta roof tiles: flat fill, vertical ribs, heavy eave. */
+function roof(ctx: Ctx, x: number, y: number, w: number, h: number, fill = C.pink) {
+  ctx.fillStyle = fill;
+  ctx.fillRect(x, y, w, h);
+
+  const pitch = h * 0.62;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  keyline(ctx, h * 0.06);
+  ctx.beginPath();
+  for (let rib = x + pitch / 2; rib < x + w; rib += pitch) {
+    ctx.moveTo(rib, y);
+    ctx.lineTo(rib, y + h * 0.72);
   }
+  ctx.moveTo(x, y + h * 0.72);
+  ctx.lineTo(x + w, y + h * 0.72);
+  ctx.stroke();
+  ctx.restore();
+
+  keyline(ctx, h * 0.09);
+  ctx.strokeRect(x, y, w, h);
+}
+
+/** A bank of sand with a soft crest. */
+function dune(ctx: Ctx, x: number, y: number, w: number, h: number) {
+  const crest = () => {
+    ctx.moveTo(x, y + h * 0.52);
+    ctx.bezierCurveTo(x + w * 0.3, y - h * 0.18, x + w * 0.62, y + h * 0.52, x + w, y + h * 0.1);
+  };
+  ctx.beginPath();
+  crest();
+  ctx.lineTo(x + w, y + h);
+  ctx.lineTo(x, y + h);
+  ctx.closePath();
+  ctx.fillStyle = C.sand;
+  ctx.fill();
+
+  ctx.beginPath();
+  crest();
+  keyline(ctx, h * 0.07);
+  ctx.stroke();
+}
+
+/** A coconut palm: pale leaning trunk, a fan of fronds, three nuts. */
+function palm(ctx: Ctx, x: number, baseY: number, h: number, dir: 1 | -1) {
+  const topX = x + dir * h * 0.2;
+  const topY = baseY - h;
+  const tw = Math.max(5, h * 0.042);
+  const pen = Math.max(2.5, h * 0.013);
+
+  ctx.beginPath();
+  ctx.moveTo(x - tw, baseY);
+  ctx.quadraticCurveTo(x + dir * h * 0.01, baseY - h * 0.55, topX - tw * 0.55, topY);
+  ctx.lineTo(topX + tw * 0.55, topY);
+  ctx.quadraticCurveTo(x + dir * h * 0.05 + tw, baseY - h * 0.55, x + tw, baseY);
+  ctx.closePath();
+  ctx.fillStyle = C.cream;
+  ctx.fill();
+  keyline(ctx, pen);
+  ctx.stroke();
+
+  const R = h * 0.44;
+  for (let i = 0; i < 6; i++) {
+    const a = -Math.PI + (i / 5) * Math.PI;
+    const droop = R * 0.24;
+    const ex = topX + Math.cos(a) * R;
+    const ey = topY + Math.sin(a) * R * 0.7 + droop;
+    const mx = topX + Math.cos(a) * R * 0.55;
+    const my = topY + Math.sin(a) * R * 0.6 - R * 0.2;
+    ctx.beginPath();
+    ctx.moveTo(topX, topY);
+    ctx.quadraticCurveTo(mx, my, ex, ey);
+    ctx.quadraticCurveTo(mx, my + R * 0.4, topX, topY);
+    ctx.closePath();
+    ctx.fillStyle = i % 2 ? C.line : C.ink;
+    ctx.fill();
+    keyline(ctx, pen);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = C.sand;
+  for (const [ox, oy] of [[-0.9, 0.5], [0.9, 0.5], [0, 1.1]]) {
+    ctx.beginPath();
+    ctx.arc(topX + ox * tw, topY + oy * tw, tw * 0.62, 0, Math.PI * 2);
+    ctx.fill();
+    keyline(ctx, pen);
+    ctx.stroke();
+  }
+}
+
+/**
+ * Sand and palms across the foot of a photo box, overlapping the bottom of the
+ * shot. Faces sit in the top third of a cover-fit portrait, and the palms hug
+ * the two edges, so this lands on the background rather than on the builder.
+ * The caller clips to the photo, which is what keeps it inside the window.
+ */
+function beachFront(ctx: Ctx, x: number, y: number, w: number, h: number) {
+  const sandH = h * 0.085;
+  const sandY = y + h - sandH;
+  dune(ctx, x - 4, sandY, w + 8, sandH + 8);
+  palm(ctx, x + w * 0.01, sandY + sandH * 0.55, h * 0.44, 1);
+  palm(ctx, x + w * 0.99, sandY + sandH * 0.66, h * 0.32, -1);
 }
 
 /** The four-point sparkle used as a bullet across the HH Goa site. */
@@ -330,79 +399,10 @@ export function builderCode(name: string, stack: string) {
   return `HHG26-${h.toString(16).toUpperCase().padStart(8, "0").slice(0, 4)}`;
 }
 
-/* ------------------------------------------------------------- the ring */
-
 export type Shot = { img: CanvasImageSource; w: number; h: number; crop: Crop };
-
-/**
- * The PFP ring: photo inside, yellow band outside, arc-set wordmark on top and
- * the गोवा medallion at six o'clock. Sized off `R` so the same artwork serves
- * the 1024px avatar and the small heads on a team card.
- */
-function drawRing(ctx: Ctx, cx: number, cy: number, R: number, shot: Shot | null, a: Art) {
-  const band = R * 0.172;
-  const rIn = R - band;
-  const k = R / 512; // scale factor against the reference 1024px render
-  const big = R >= 150;
-
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy, rIn + 2 * k, 0, Math.PI * 2);
-  ctx.clip();
-  ctx.fillStyle = C.deep;
-  ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
-  if (shot) {
-    drawCover(ctx, shot.img, shot.w, shot.h, cx - rIn, cy - rIn, rIn * 2, rIn * 2, shot.crop);
-  }
-  ctx.restore();
-
-  // Yellow band.
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, Math.PI * 2);
-  ctx.arc(cx, cy, rIn, 0, Math.PI * 2, true);
-  ctx.fillStyle = C.yellow;
-  ctx.fill("evenodd");
-
-  // Dark notch under the medallion.
-  const notch = 0.56;
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, Math.PI / 2 - notch, Math.PI / 2 + notch);
-  ctx.arc(cx, cy, rIn, Math.PI / 2 + notch, Math.PI / 2 - notch, true);
-  ctx.closePath();
-  ctx.fillStyle = C.deep;
-  ctx.fill();
-
-  // Keyline where the photo meets the band.
-  ctx.beginPath();
-  ctx.arc(cx, cy, rIn, 0, Math.PI * 2);
-  ctx.strokeStyle = C.deep;
-  ctx.lineWidth = 10 * k;
-  ctx.stroke();
-
-  const rText = R - band * 0.5;
-
-  // Below roughly 300px across, ring lettering turns to noise.
-  if (big) {
-    ctx.fillStyle = C.ink;
-    ctx.font = D(58 * k);
-    arcText(ctx, `${EVENT.name} ${EVENT.year}`, cx, cy, rText + 6 * k, -Math.PI / 2, 1, 3 * k);
-  }
-
-  sparkle(ctx, cx - rText, cy, 17 * k, C.pink);
-  sparkle(ctx, cx + rText, cy, 17 * k, C.pink);
-
-  // The गोवा medallion, centred on the notch. mark() draws from the top edge,
-  // so offset by half or it hangs off the bottom of the canvas. Skipped on the
-  // small team heads, where it would only ever be a smudge.
-  if (big) {
-    const medal = band * 1.4;
-    mark(ctx, a.goa, cx, cy + rIn - medal / 2, medal, "center");
-  }
-}
 
 /* ----------------------------------------------------------- compositions */
 
-export const PFP_SIZE = 1024;
 export const BADGE_W = 1024;
 export const BADGE_H = 1536;
 export const CARD_W = 1200;
@@ -419,49 +419,29 @@ function ctxOf(canvas: HTMLCanvasElement, w: number, h: number) {
   return ctx;
 }
 
-/** Format A: the square avatar. X crops it to the inscribed circle. */
-export function renderPfp(canvas: HTMLCanvasElement, shot: Shot | null, a: Art) {
-  const S = PFP_SIZE;
-  const ctx = ctxOf(canvas, S, S);
-  art(ctx, a.sunrise, 0, 0, S, S);
-  ctx.fillStyle = hexA(C.ink, 0.32);
-  ctx.fillRect(0, 0, S, S);
+/**
+ * The strip of sand the house stands on, carrying the place and the hashtag.
+ * Ink on sand measures 4.9:1, so the small caps here are still readable type.
+ */
+function groundBar(ctx: Ctx, w: number, h: number, right: string) {
+  const barH = 84;
+  const y = h - barH;
+  ctx.fillStyle = C.sand;
+  ctx.fillRect(0, y, w, barH);
+  keyline(ctx, 6);
+  ctx.beginPath();
+  ctx.moveTo(0, y);
+  ctx.lineTo(w, y);
+  ctx.stroke();
 
-  // Corner marks, only visible when the square itself is posted.
-  ctx.font = M(22, 700);
-  ctx.letterSpacing = "3px";
-  ctx.textBaseline = "top";
-  ctx.textAlign = "left";
-  ctx.fillStyle = C.yellow;
-  ctx.fillText(EVENT.datesShort, 28, 26);
-  ctx.textAlign = "right";
-  ctx.fillStyle = C.sea;
-  ctx.fillText("'26", S - 28, 26);
-  ctx.textBaseline = "alphabetic";
-  ctx.textAlign = "left";
-  ctx.fillStyle = C.cream;
-  ctx.fillText(EVENT.tag, 28, S - 28);
-  ctx.textAlign = "right";
-  ctx.fillStyle = C.pink;
-  ctx.fillText("GOA", S - 28, S - 28);
-  ctx.letterSpacing = "0px";
-
-  drawRing(ctx, S / 2, S / 2, S / 2, shot, a);
-  return canvas;
-}
-
-function bottomBar(ctx: Ctx, w: number, h: number, right: string) {
-  const y = h - 74;
-  ctx.fillStyle = C.yellow;
-  ctx.fillRect(0, y, w, 74);
   ctx.font = M(24, 700);
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.letterSpacing = "2px";
-  ctx.fillStyle = C.ink;
-  ctx.fillText(`${EVENT.place}  ·  ${EVENT.dates}`, 48, y + 42);
+  ctx.fillStyle = C.outline;
+  ctx.fillText(`${EVENT.place}  ·  ${EVENT.dates}`, 48, y + barH / 2);
   ctx.textAlign = "right";
-  ctx.fillText(right, w - 48, y + 42);
+  ctx.fillText(right, w - 48, y + barH / 2);
   ctx.letterSpacing = "0px";
 }
 
@@ -470,6 +450,10 @@ export type IdFields = { name: string; stack: string; title: string };
 /**
  * Format B, portrait: the lanyard badge. 2:3 so it reads as a physical event
  * pass rather than a banner.
+ *
+ * The card is the house from the event artwork, stacked: tiled roof, the
+ * illustration itself under it, then the builder's photo as a shuttered window,
+ * and sand at the foot. Bougainvillea hangs off both ends of the roofline.
  */
 export function renderBadge(
   canvas: HTMLCanvasElement,
@@ -487,103 +471,112 @@ export function renderBadge(
   ctx.fillStyle = C.deep;
   ctx.fillRect(0, 0, W, H);
 
-  // Night beach behind the lockup.
-  const bandY = 112, bandH = 292;
+  // Roof, then the house illustration behind the lockup.
+  const roofY = 92, roofH = 72;
+  const bandY = roofY + roofH, bandH = 250;
   ctx.save();
   ctx.beginPath();
   ctx.rect(0, bandY, W, bandH);
   ctx.clip();
-  art(ctx, a.sunrise, 0, bandY - 300, W, bandH + 380);
-  ctx.fillStyle = hexA(C.ink, 0.72);
+  art(ctx, a.house, 0, bandY - 96, W, bandH + 200);
+  // Light enough to keep the pinks and yellows, dark enough for the lockup.
+  ctx.fillStyle = hexA(C.ink, 0.34);
   ctx.fillRect(0, bandY, W, bandH);
   ctx.restore();
-  scrimY(ctx, 0, bandY + bandH - 130, bandY + bandH, W);
-  scrimY(ctx, 0, bandY + 80, bandY, W);
+  scrimY(ctx, 0, bandY + bandH - 120, bandY + bandH, W);
 
-  // Lanyard slot.
+  roof(ctx, 0, roofY, W, roofH);
+
+  // Lanyard slot, punched through the roof line.
   ctx.beginPath();
-  ctx.roundRect(W / 2 - 150, 44, 300, 34, 17);
+  ctx.roundRect(W / 2 - 150, 34, 300, 34, 17);
   ctx.fillStyle = C.ink;
   ctx.fill();
-  ctx.strokeStyle = C.yellow;
-  ctx.lineWidth = 3;
+  keyline(ctx, 5);
   ctx.stroke();
 
-  mark(ctx, a.lockup, W / 2, bandY + 62, 168, "center");
+  mark(ctx, a.lockup, W / 2, bandY + 54, 168, "center");
 
-  // Photo.
-  const px = 72, py = 424, pw = W - 144, ph = 736;
+  // Photo, edge to edge inside the card margin.
+  const px = 72, py = 430, pw = W - px * 2, ph = 682;
+
   ctx.save();
   ctx.beginPath();
-  ctx.roundRect(px, py, pw, ph, 36);
+  ctx.roundRect(px, py, pw, ph, 30);
   ctx.fillStyle = C.ink;
   ctx.fill();
   ctx.clip();
   if (shot) drawCover(ctx, shot.img, shot.w, shot.h, px, py, pw, ph, shot.crop);
+  beachFront(ctx, px, py, pw, ph);
   ctx.restore();
   ctx.beginPath();
-  ctx.roundRect(px, py, pw, ph, 36);
-  ctx.strokeStyle = C.yellow;
-  ctx.lineWidth = 7;
+  ctx.roundRect(px, py, pw, ph, 30);
+  keyline(ctx, 8);
   ctx.stroke();
 
-  // Serial row, straight under the photo.
+  // Serial row, straight under the window.
+  const mx = 72;
   ctx.font = M(21, 700);
   ctx.letterSpacing = "2px";
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = C.yellow;
-  ctx.fillText(builderCode(f.name, f.stack), px, 1206);
+  ctx.fillText(builderCode(f.name, f.stack), mx, 1152);
   ctx.textAlign = "right";
   ctx.fillStyle = C.sea;
-  ctx.fillText(`${EVENT.dates}  ·  ${EVENT.place}`, W - px, 1206);
+  ctx.fillText("SELF-ISSUED BUILDER PASS", W - mx, 1152);
   ctx.letterSpacing = "0px";
 
   ctx.beginPath();
-  ctx.moveTo(px, 1230);
-  ctx.lineTo(W - px, 1230);
+  ctx.moveTo(mx, 1176);
+  ctx.lineTo(W - mx, 1176);
   ctx.strokeStyle = C.line;
   ctx.lineWidth = 2;
   ctx.stroke();
 
   // Details.
   const textW = 640;
-  label(ctx, "BUILDER", px, 1284, 22, C.sea);
+  sparkle(ctx, mx + 8, 1210, 11, C.pink);
+  label(ctx, "BUILDER", mx + 30, 1218, 22, C.sea);
 
   const nm = (f.name.trim() || "YOUR NAME").toUpperCase();
   ctx.font = D(fitDisplay(ctx, nm, textW, 100));
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = C.yellow;
-  ctx.fillText(nm, px, 1360);
+  ctx.fillText(nm, mx, 1294);
 
-  chip(ctx, f.title, px, 1386, 26, C.pink, C.cream, textW);
+  // Sand chip, ink type: the title reads at 4.9:1 instead of pink's 1.8:1.
+  chip(ctx, f.title, mx, 1320, 26, C.sand, C.outline, textW);
 
   ctx.font = M(28, 700);
   ctx.fillStyle = C.cream;
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
-  ctx.fillText(truncate(ctx, f.stack.trim() || "BUILDER", textW), px, 1486);
+  ctx.fillText(truncate(ctx, f.stack.trim() || "BUILDER", textW), mx, 1424);
 
-  // QR back to the event.
-  const qs = 168;
-  const qx = W - 72 - qs, qy = 1272;
+  // QR back to the event, on a yellow plate with the same heavy keyline.
+  const qs = 150;
+  const qx = W - mx - qs, qy = 1210;
   ctx.beginPath();
   ctx.roundRect(qx - 10, qy - 10, qs + 20, qs + 20, 16);
   ctx.fillStyle = C.yellow;
   ctx.fill();
+  keyline(ctx, 5);
+  ctx.stroke();
   if (a.qr) ctx.drawImage(a.qr, qx, qy, qs, qs);
   ctx.font = M(17, 700);
   ctx.fillStyle = C.sea;
   ctx.textAlign = "center";
-  ctx.fillText(EVENT.site, qx + qs / 2, qy + qs + 40);
+  ctx.fillText(EVENT.site, qx + qs / 2, qy + qs + 36);
+
+  groundBar(ctx, W, H, EVENT.tag);
 
   ctx.restore();
 
   ctx.beginPath();
   ctx.roundRect(4, 4, W - 8, H - 8, 54);
-  ctx.strokeStyle = C.yellow;
-  ctx.lineWidth = 7;
+  keyline(ctx, 9);
   ctx.stroke();
   return canvas;
 }
@@ -596,168 +589,82 @@ export function renderId(
   f: IdFields,
 ) {
   const ctx = ctxOf(canvas, CARD_W, CARD_H);
-  art(ctx, a.hackers, 0, 0, CARD_W, CARD_H);
+  const roofH = 46;
+  art(ctx, a.house, 0, roofH, CARD_W, CARD_H - roofH);
 
-  const g = ctx.createLinearGradient(330, 0, 700, 0);
+  // The illustration keeps the left third; the type column behind it goes
+  // solid, because half-lit shutters under a name is just noise.
+  const g = ctx.createLinearGradient(400, 0, 620, 0);
   g.addColorStop(0, hexA(C.deep, 0));
-  g.addColorStop(1, hexA(C.deep, 0.97));
+  g.addColorStop(1, C.deep);
   ctx.fillStyle = g;
-  ctx.fillRect(330, 0, CARD_W - 330, CARD_H);
-  ctx.fillStyle = hexA(C.ink, 0.35);
+  ctx.fillRect(400, 0, CARD_W - 400, CARD_H);
+  ctx.fillStyle = hexA(C.ink, 0.18);
   ctx.fillRect(0, 0, CARD_W, CARD_H);
+  // and everything under the photo, where the serial row lands. Full width, or
+  // the fade leaves a hard vertical seam where it meets the column gradient.
+  scrimY(ctx, 0, 430, 486, CARD_W);
+  ctx.fillStyle = C.deep;
+  ctx.fillRect(0, 486, CARD_W, CARD_H - 84 - 486);
 
-  // Photo.
-  const px = 56, py = 74, pw = 292, ph = 376;
+  roof(ctx, 0, 0, CARD_W, roofH);
+
+  const px = 56, py = 80, pw = 336, ph = 390;
+
   ctx.save();
   ctx.beginPath();
-  ctx.roundRect(px, py, pw, ph, 26);
+  ctx.roundRect(px, py, pw, ph, 24);
   ctx.fillStyle = C.ink;
   ctx.fill();
   ctx.clip();
   if (shot) drawCover(ctx, shot.img, shot.w, shot.h, px, py, pw, ph, shot.crop);
+  beachFront(ctx, px, py, pw, ph);
   ctx.restore();
   ctx.beginPath();
-  ctx.roundRect(px, py, pw, ph, 26);
-  ctx.strokeStyle = C.yellow;
-  ctx.lineWidth = 6;
+  ctx.roundRect(px, py, pw, ph, 24);
+  keyline(ctx, 7);
   ctx.stroke();
 
-  label(ctx, builderCode(f.name, f.stack), px, py + ph + 46, 22, C.yellow);
+  label(ctx, builderCode(f.name, f.stack), px, py + ph + 44, 22, C.yellow);
   ctx.font = M(19);
   ctx.fillStyle = C.sea;
   ctx.letterSpacing = "2px";
-  ctx.fillText("SELF-ISSUED BUILDER PASS", px, py + ph + 76);
+  ctx.fillText("SELF-ISSUED BUILDER PASS", px, py + ph + 74);
   ctx.letterSpacing = "0px";
 
   // Right column.
-  const x = 412;
-  const textW = 1200 - x - 220;
+  const x = 464;
+  const textW = CARD_W - x - 220;
 
-  mark(ctx, a.lockup, x, 56, 118);
+  mark(ctx, a.lockup, x, 74, 112);
 
   const nm = (f.name.trim() || "YOUR NAME").toUpperCase();
   ctx.font = D(fitDisplay(ctx, nm, textW, 104));
   ctx.textAlign = "left";
   ctx.textBaseline = "alphabetic";
   ctx.fillStyle = C.yellow;
-  ctx.fillText(nm, x, 288);
+  ctx.fillText(nm, x, 298);
 
-  chip(ctx, f.title, x, 314, 26, C.pink, C.cream, textW);
+  chip(ctx, f.title, x, 324, 26, C.sand, C.outline, textW);
 
-  label(ctx, "STACK / ROLE", x, 428, 19, C.sea);
+  label(ctx, "STACK / ROLE", x, 436, 19, C.sea);
   ctx.font = M(32, 700);
   ctx.fillStyle = C.cream;
   ctx.textAlign = "left";
-  ctx.fillText(truncate(ctx, f.stack.trim() || "BUILDER", textW), x, 472);
+  ctx.fillText(truncate(ctx, f.stack.trim() || "BUILDER", textW), x, 480);
 
   const qs = 150;
-  const qx = CARD_W - 56 - qs;
+  const qx = CARD_W - 56 - qs, qy = 82;
   ctx.beginPath();
-  ctx.roundRect(qx - 9, 66 - 9, qs + 18, qs + 18, 14);
+  ctx.roundRect(qx - 9, qy - 9, qs + 18, qs + 18, 14);
   ctx.fillStyle = C.yellow;
   ctx.fill();
-  if (a.qr) ctx.drawImage(a.qr, qx, 66, qs, qs);
+  keyline(ctx, 5);
+  ctx.stroke();
+  if (a.qr) ctx.drawImage(a.qr, qx, qy, qs, qs);
+  mark(ctx, a.goa, qx + qs / 2, qy + qs + 22, 46, "center");
 
-  bottomBar(ctx, CARD_W, CARD_H, EVENT.tag);
-  return canvas;
-}
-
-export type Member = { shot: Shot | null; name: string };
-
-/** The combined team frame. */
-export function renderTeam(
-  canvas: HTMLCanvasElement,
-  members: Member[],
-  a: Art,
-  teamName: string,
-) {
-  const ctx = ctxOf(canvas, CARD_W, CARD_H);
-  art(ctx, a.trees, 0, 0, CARD_W, CARD_H);
-  ctx.fillStyle = hexA(C.ink, 0.28);
-  ctx.fillRect(0, 0, CARD_W, CARD_H);
-
-  mark(ctx, a.lockup, 52, 40, 104);
-
-  const eyebrow = "TEAM SHIPPING AT";
-  ctx.font = M(21, 700);
-  ctx.letterSpacing = "3px";
-  const ebW = ctx.measureText(eyebrow).width;
-  ctx.fillStyle = C.sea;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "alphabetic";
-  ctx.fillText(eyebrow, CARD_W - 52 - ebW, 70);
-  ctx.letterSpacing = "0px";
-  sparkle(ctx, CARD_W - 66 - ebW, 62, 10, C.pink);
-
-  const tn = (teamName.trim() || EVENT.name).toUpperCase();
-  const tnSize = fitDisplay(ctx, tn, CARD_W - 420, 92);
-  stamp(ctx, tn, CARD_W - 52, 150, tnSize, C.yellow, C.ink, "right");
-
-  const n = Math.max(1, members.length);
-  const R = n <= 2 ? 142 : n === 3 ? 126 : 110;
-  const gap = n <= 2 ? 60 : 40;
-  const total = n * R * 2 + (n - 1) * gap;
-  let cx = (CARD_W - total) / 2 + R;
-  const cy = 368;
-
-  for (const m of members) {
-    drawRing(ctx, cx, cy, R, m.shot, a);
-    const who = m.name.trim().toUpperCase();
-    if (who) {
-      ctx.font = M(23, 700);
-      const text = truncate(ctx, who, R * 2 + gap - 44);
-      const w = ctx.measureText(text).width + 36;
-      ctx.beginPath();
-      ctx.roundRect(cx - w / 2, cy + R + 18, w, 44, 22);
-      ctx.fillStyle = C.ink;
-      ctx.fill();
-      ctx.strokeStyle = C.yellow;
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.fillStyle = C.cream;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(text, cx, cy + R + 41);
-    }
-    cx += R * 2 + gap;
-  }
-
-  bottomBar(ctx, CARD_W, CARD_H, EVENT.tag);
-  return canvas;
-}
-
-/** Landscape wrapper for Format A, so the X link preview is not letterboxed. */
-export function renderPfpShare(
-  canvas: HTMLCanvasElement,
-  shot: Shot | null,
-  a: Art,
-  name: string,
-) {
-  const ctx = ctxOf(canvas, CARD_W, CARD_H);
-  art(ctx, a.sunrise, 0, 0, CARD_W, CARD_H);
-  ctx.fillStyle = hexA(C.ink, 0.42);
-  ctx.fillRect(0, 0, CARD_W, CARD_H);
-
-  drawRing(ctx, 286, 288, 214, shot, a);
-
-  const x = 566;
-  const maxW = CARD_W - x - 56;
-
-  mark(ctx, a.lockup, x, 74, 128);
-
-  stamp(ctx, "I'M IN.", x, 344, 116, C.yellow, C.ink);
-
-  const who = name.trim().toUpperCase();
-  if (who) {
-    ctx.font = M(26, 700);
-    ctx.fillStyle = C.cream;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "alphabetic";
-    ctx.fillText(truncate(ctx, who, maxW), x, 392);
-  }
-
-  chip(ctx, EVENT.tag, x, who ? 420 : 380, 26, C.pink, C.cream, maxW);
-  bottomBar(ctx, CARD_W, CARD_H, EVENT.motto);
+  groundBar(ctx, CARD_W, CARD_H, EVENT.tag);
   return canvas;
 }
 

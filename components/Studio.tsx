@@ -10,8 +10,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import dynamic from "next/dynamic";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
-import type { Credit } from "@/components/PassScene";
+import { AnimatePresence, motion, useInView, useReducedMotion } from "motion/react";
 import {
   ArrowClockwiseIcon,
   ArrowsOutCardinalIcon,
@@ -19,7 +18,6 @@ import {
   ImageSquareIcon,
   PlusIcon,
   SparkleIcon,
-  TrashIcon,
   WarningIcon,
   XLogoIcon,
 } from "@phosphor-icons/react";
@@ -31,14 +29,10 @@ import {
   readyFonts,
   renderBadge,
   renderId,
-  renderPfp,
-  renderPfpShare,
-  renderTeam,
   setFonts,
   toPngBlob,
   type Art,
   type Crop,
-  type Member,
   type Shot,
 } from "@/lib/render";
 
@@ -50,19 +44,21 @@ const PassScene = dynamic(() => import("@/components/PassScene"), {
 
 /* ------------------------------------------------------------------ types */
 
-type Mode = "pfp" | "id" | "team";
 type Shape = "portrait" | "landscape";
-type Photo = { img: ImageBitmap; w: number; h: number; thumb: string };
-type Slot = { photo: Photo | null; name: string };
-
-const MODES: { id: Mode; label: string; blurb: string }[] = [
-  { id: "pfp", label: "Frame", blurb: "Square profile frame for X" },
-  { id: "id", label: "Builder pass", blurb: "Lanyard badge or timeline card" },
-  { id: "team", label: "Team", blurb: "Up to four builders, one card" },
-];
+type Photo = { img: ImageBitmap; w: number; h: number };
 
 const MAX_BYTES = 30 * 1024 * 1024;
-const TEAM_MAX = 4;
+
+/* Shown one at a time on the empty stage. The card behind it is a second WebGL
+   context compiling its shaders, which takes a few seconds on a cold load, and
+   a stage that never moves reads as broken rather than busy. */
+const HINTS = [
+  "jpg, png, webp, or an iPhone HEIC straight off the camera roll.",
+  "Your photo never leaves this browser. Nothing to sign up for.",
+  "Any shape, any crop. Faces land right on the first try.",
+  "Every pass gets its own builder title. Reroll until one fits.",
+  "Drag the preview to move the shot, drag the slider to zoom.",
+];
 
 /* Whether this browser can hand the PNG straight to the X app. Probed once,
    client only, so the server render and the first client render agree. */
@@ -119,18 +115,7 @@ async function decode(file: File): Promise<Photo> {
     bitmap = small;
   }
 
-  const canvas = document.createElement("canvas");
-  const t = 160 / Math.max(bitmap.width, bitmap.height);
-  canvas.width = Math.round(bitmap.width * t);
-  canvas.height = Math.round(bitmap.height * t);
-  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-
-  return {
-    img: bitmap,
-    w: bitmap.width,
-    h: bitmap.height,
-    thumb: canvas.toDataURL("image/jpeg", 0.7),
-  };
+  return { img: bitmap, w: bitmap.width, h: bitmap.height };
 }
 
 /* --------------------------------------------------------------- the tool */
@@ -139,24 +124,29 @@ export function Studio() {
   const viewRef = useRef<HTMLCanvasElement>(null);
   const shareRef = useRef<HTMLCanvasElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const teamFileRef = useRef<HTMLInputElement>(null);
-  const teamTargetRef = useRef(0);
   const reduce = useReducedMotion();
   const uid = useId();
 
-  const [mode, setMode] = useState<Mode>("pfp");
   const [shape, setShape] = useState<Shape>("portrait");
   const [photo, setPhoto] = useState<Photo | null>(null);
   const [crop, setCrop] = useState<Crop>(CROP0);
-  const [team, setTeam] = useState<Slot[]>([{ photo: null, name: "" }]);
   const [name, setName] = useState("");
   const [stack, setStack] = useState("");
-  const [teamName, setTeamName] = useState("");
   const [salt, setSalt] = useState(0);
 
   const [art, setArt] = useState<Art>({});
   const [view3d, setView3d] = useState(true);
-  const [credits, setCredits] = useState<Credit[]>([]);
+  // The card scene is a second WebGL context with its own models and shaders,
+  // and it sits three screens below the fold. Mounting it on load made it
+  // compile alongside the beach and hold the hero back; it waits until the
+  // stage is nearly in view instead.
+  const stage = useRef<HTMLDivElement>(null);
+  const stageNear = useInView(stage, { once: true, margin: "600px" });
+  // The flat canvas is the fallback, not a placeholder: it holds the frame
+  // until the card's models and shaders are actually up. Hiding it the moment
+  // the scene mounted left an empty box for the whole load.
+  const [card3d, setCard3d] = useState(false);
+  const onCardReady = useCallback(() => setCard3d(true), []);
   // Bumped on every repaint; the 3D scene polls it so the texture uploads only
   // when the artwork actually changed, without a React render per frame.
   const revision = useRef(0);
@@ -164,10 +154,11 @@ export function Studio() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [hint, setHint] = useState(0);
 
   const title = useMemo(() => builderTitle(name, stack, salt), [name, stack, salt]);
-  const hasArt = mode === "team" ? team.some((s) => s.photo) : !!photo;
-  const portraitBadge = mode === "id" && shape === "portrait";
+  const hasArt = !!photo;
+  const portraitBadge = shape === "portrait";
 
   /* --- one-time asset + font warmup --- */
   useEffect(() => {
@@ -180,6 +171,13 @@ export function Studio() {
     loadArt().then(setArt).catch(() => setArt({}));
   }, []);
 
+  /* --- cycle the empty-stage copy, only while the stage is empty --- */
+  useEffect(() => {
+    if (hasArt) return;
+    const t = setInterval(() => setHint((n) => (n + 1) % HINTS.length), 3200);
+    return () => clearInterval(t);
+  }, [hasArt]);
+
   /* --- redraw whenever anything the artwork depends on changes --- */
   useEffect(() => {
     const view = viewRef.current;
@@ -189,50 +187,29 @@ export function Studio() {
       : null;
     const fields = { name, stack, title };
 
-    if (mode === "pfp") {
-      renderPfp(view, shot, art);
-      if (shareRef.current) renderPfpShare(shareRef.current, shot, art, name);
-    } else if (mode === "id") {
-      if (shape === "portrait") {
-        renderBadge(view, shot, art, fields);
-        if (shareRef.current) renderId(shareRef.current, shot, art, fields);
-      } else {
-        renderId(view, shot, art, fields);
-      }
+    if (portraitBadge) {
+      renderBadge(view, shot, art, fields);
+      // Off-screen landscape twin, so the X card is never a letterboxed portrait.
+      if (shareRef.current) renderId(shareRef.current, shot, art, fields);
     } else {
-      const members: Member[] = team
-        .filter((s) => s.photo)
-        .map((s) => ({
-          shot: { img: s.photo!.img, w: s.photo!.w, h: s.photo!.h, crop: CROP0 },
-          name: s.name,
-        }));
-      renderTeam(view, members, art, teamName);
+      renderId(view, shot, art, fields);
     }
     revision.current += 1;
-  }, [mode, shape, photo, crop, name, stack, title, team, teamName, art, fontsOk]);
+  }, [portraitBadge, photo, crop, name, stack, title, art, fontsOk]);
 
   /* --- intake --- */
 
-  const takeFile = useCallback(async (file: File | undefined, slot = -1) => {
+  const takeFile = useCallback(async (file: File | undefined) => {
     if (!file) return;
     setError(null);
     setBusy("Reading photo");
     try {
       const next = await decode(file);
-      if (slot < 0) {
-        setPhoto((prev) => {
-          prev?.img.close();
-          return next;
-        });
-        setCrop(CROP0);
-      } else {
-        setTeam((prev) => {
-          const copy = [...prev];
-          copy[slot]?.photo?.img.close();
-          copy[slot] = { ...copy[slot], photo: next };
-          return copy;
-        });
-      }
+      setPhoto((prev) => {
+        prev?.img.close();
+        return next;
+      });
+      setCrop(CROP0);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not read that photo.");
     } finally {
@@ -244,15 +221,9 @@ export function Studio() {
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
-      const file = e.dataTransfer.files?.[0];
-      if (mode === "team") {
-        const slot = team.findIndex((s) => !s.photo);
-        takeFile(file, slot < 0 ? 0 : slot);
-      } else {
-        takeFile(file);
-      }
+      takeFile(e.dataTransfer.files?.[0]);
     },
-    [mode, team, takeFile],
+    [takeFile],
   );
 
   /* --- drag to reposition --- */
@@ -260,7 +231,7 @@ export function Studio() {
   const drag = useRef<{ id: number; x: number; y: number; box: DOMRect } | null>(null);
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!photo || mode === "team") return;
+    if (!photo) return;
     drag.current = {
       id: e.pointerId,
       x: e.clientX,
@@ -286,10 +257,7 @@ export function Studio() {
 
   /* --- output --- */
 
-  const fileStem =
-    mode === "pfp" ? "hh-goa-2026-frame"
-    : mode === "id" ? `hh-goa-2026-builder-pass${name.trim() ? "-" + slug(name) : ""}`
-    : `hh-goa-2026-team${teamName.trim() ? "-" + slug(teamName) : ""}`;
+  const fileStem = `hh-goa-2026-builder-pass${name.trim() ? "-" + slug(name) : ""}`;
 
   const download = async () => {
     const view = viewRef.current;
@@ -304,19 +272,12 @@ export function Studio() {
   };
 
   const caption = () => {
-    if (mode === "team") {
-      return `${(teamName.trim() || "Our team").toUpperCase()} is building at Hacker House Goa 2026. 🌴\n\nOne upload each, one combined frame. Make yours:\n${EVENT.tag}`;
-    }
-    if (mode === "id") {
-      const who = name.trim() || "Builder";
-      return `${who} · ${title} · ${stack.trim() || "building things"}\n\nBuilder pass minted for Hacker House Goa 2026, 28-31 Oct. 🌴\nMake yours:\n${EVENT.tag}`;
-    }
-    return `I'm in. Hacker House Goa 2026, 28-31 Oct, Goa. 🌴\n\nMade my frame in one upload, no cropping. Make yours:\n${EVENT.tag}`;
+    const who = name.trim() || "Builder";
+    return `${who} · ${title} · ${stack.trim() || "building things"}\n\nBuilder pass minted for Hacker House Goa 2026, 28-31 Oct. 🌴\nMake yours:\n${EVENT.tag}`;
   };
 
   /** The landscape art, so an X card is never a letterboxed portrait. */
-  const shareCanvas = () =>
-    mode === "pfp" || portraitBadge ? shareRef.current : viewRef.current;
+  const shareCanvas = () => (portraitBadge ? shareRef.current : viewRef.current);
 
   const shareToX = async () => {
     // Opened synchronously so mobile Safari does not swallow it as a popup.
@@ -371,12 +332,8 @@ export function Studio() {
 
   /* ------------------------------------------------------------- markup */
 
-  const stageAspect =
-    mode === "pfp" ? "aspect-square"
-    : portraitBadge ? "aspect-[1024/1536]"
-    : "aspect-[1200/675]";
-
-  const cardAspect = mode === "pfp" ? 1 : portraitBadge ? 1024 / 1536 : 1200 / 675;
+  const stageAspect = portraitBadge ? "aspect-[1024/1536]" : "aspect-[1200/675]";
+  const cardAspect = portraitBadge ? 1024 / 1536 : 1200 / 675;
 
   return (
     <section
@@ -384,122 +341,130 @@ export function Studio() {
       aria-label="Graphic generator"
       className="mx-auto w-full max-w-6xl px-5 pt-10 pb-20 sm:px-8"
     >
-      {/* format switch */}
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <div
-          role="group"
-          aria-label="Graphic format"
-          className="flex gap-1 rounded-full border-2 border-line bg-deep p-1"
-        >
-          {MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              aria-pressed={mode === m.id}
-              onClick={() => setMode(m.id)}
-              className="relative cursor-pointer rounded-full px-4 py-2 text-xs font-bold tracking-widest uppercase sm:px-6 sm:text-sm"
-            >
-              {mode === m.id && (
-                <motion.span
-                  layoutId="tabpill"
-                  transition={reduce ? { duration: 0 } : { type: "spring", stiffness: 500, damping: 40 }}
-                  className="absolute inset-0 rounded-full bg-yellow"
-                />
-              )}
-              <span className={mode === m.id ? "relative text-ink" : "relative text-sea"}>
-                {m.label}
-              </span>
-            </button>
-          ))}
-        </div>
-        <p className="hidden font-mono text-xs tracking-wide text-sea sm:block sm:text-sm">
-          {MODES.find((m) => m.id === mode)!.blurb}
+      <div className="mb-6 flex flex-wrap items-baseline justify-between gap-4">
+        <h2 className="display text-3xl text-yellow sm:text-4xl">Builder pass</h2>
+        <p className="font-mono text-xs tracking-wide text-sea sm:text-sm">
+          Lanyard badge or timeline card
         </p>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-12">
         {/* ------------------------------------------------ stage / dropzone */}
         <div className="lg:col-span-7">
+          {/* The preview is a window in the house: a louvered shutter on each
+              side, same as the ones drawn on the pass itself. */}
           <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(true);
-            }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={onDrop}
-            className={`relative mx-auto overflow-hidden rounded-2xl border-4 bg-deep transition-colors ${
-              dragOver ? "border-pink" : "border-line"
-            } ${portraitBadge ? "max-w-[380px]" : ""}`}
+            className={`mx-auto flex items-stretch gap-2 sm:gap-3 ${
+              portraitBadge ? "max-w-[500px]" : ""
+            }`}
           >
-            <canvas
-              ref={viewRef}
-              onPointerDown={onPointerDown}
-              onPointerMove={onPointerMove}
-              onPointerUp={endDrag}
-              onPointerCancel={endDrag}
-              role="img"
-              aria-label={`${MODES.find((m) => m.id === mode)!.label} preview`}
-              className={`block w-full ${stageAspect} ${hasArt ? "" : "opacity-30"} ${
-                photo && mode !== "team" ? "cursor-grab touch-none active:cursor-grabbing" : ""
-              } ${view3d ? "invisible" : ""}`}
+            <span
+              aria-hidden="true"
+              className="slats w-7 shrink-0 rounded-lg border-4 border-outline bg-pink sm:w-11"
             />
+            <div
+              ref={stage}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={onDrop}
+              className={`relative min-w-0 flex-1 overflow-hidden rounded-2xl border-4 bg-deep transition-colors ${
+                dragOver ? "border-pink" : "border-outline"
+              }`}
+            >
+              <canvas
+                ref={viewRef}
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                onPointerUp={endDrag}
+                onPointerCancel={endDrag}
+                role="img"
+                aria-label="Builder pass preview"
+                className={`block w-full ${stageAspect} ${hasArt ? "" : "opacity-30"} ${
+                  photo ? "cursor-grab touch-none active:cursor-grabbing" : ""
+                } ${view3d && card3d ? "invisible" : ""}`}
+              />
 
-            {/* Same pixels, on a card you can tilt. The flat canvas above stays
-                mounted and keeps painting, because it is what gets downloaded. */}
-            {view3d && (
-              <div className="absolute inset-0">
-                <PassScene
-                  sourceRef={viewRef}
-                  revision={revision}
-                  aspect={cardAspect}
-                  still={!!reduce}
-                  onScenery={setCredits}
-                />
-              </div>
-            )}
-
-            <AnimatePresence>
-              {!hasArt && (
-                <motion.label
-                  key="drop"
-                  initial={false}
-                  exit={reduce ? {} : { opacity: 0, scale: 0.98 }}
-                  htmlFor={`${uid}-file`}
-                  className="absolute inset-0 flex cursor-pointer flex-col items-center justify-center gap-4 p-6 text-center has-[:focus-visible]:outline has-[:focus-visible]:outline-4 has-[:focus-visible]:outline-yellow"
-                >
-                  <span className="flex h-16 w-16 items-center justify-center rounded-full bg-yellow text-ink">
-                    <ImageSquareIcon size={30} weight="bold" aria-hidden="true" />
-                  </span>
-                  <span className="display text-3xl text-yellow sm:text-4xl">
-                    Drop a photo
-                  </span>
-                  <span className="max-w-xs font-mono text-xs leading-relaxed text-cream sm:text-sm">
-                    jpg, png, webp or iPhone HEIC. Any shape, any crop. Nothing
-                    to sign up for.
-                  </span>
-                </motion.label>
+              {/* Same pixels, on a card you can tilt. The flat canvas above stays
+                  mounted and keeps painting, because it is what gets downloaded. */}
+              {view3d && stageNear && (
+                <div className="absolute inset-0">
+                  <PassScene
+                    sourceRef={viewRef}
+                    revision={revision}
+                    aspect={cardAspect}
+                    still={!!reduce}
+                    onReady={onCardReady}
+                  />
+                </div>
               )}
-            </AnimatePresence>
 
-            <AnimatePresence>
-              {busy && (
-                <motion.div
-                  key="busy"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="absolute inset-0 flex items-center justify-center bg-ink/85"
-                >
-                  <p role="status" className="font-mono text-sm tracking-widest text-yellow uppercase">
-                    {busy}…
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
+              <AnimatePresence>
+                {!hasArt && (
+                  <motion.label
+                    key="drop"
+                    initial={false}
+                    exit={reduce ? {} : { opacity: 0, scale: 0.98 }}
+                    htmlFor={`${uid}-file`}
+                    className="absolute inset-0 flex cursor-pointer flex-col items-center justify-center gap-4 p-6 text-center has-[:focus-visible]:outline has-[:focus-visible]:outline-4 has-[:focus-visible]:outline-yellow"
+                  >
+                    <motion.span
+                      animate={reduce ? undefined : { y: [0, -7, 0] }}
+                      transition={{ duration: 2.6, repeat: Infinity, ease: "easeInOut" }}
+                      className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-outline bg-yellow text-ink"
+                    >
+                      <ImageSquareIcon size={30} weight="bold" aria-hidden="true" />
+                    </motion.span>
+                    <span className="display text-3xl text-yellow sm:text-4xl">
+                      Drop a photo
+                    </span>
+                    {/* Kept narrow and on its own plate: it sits over a tilted
+                        3D card, and full-width copy spilled past its edges. The
+                        line cycles, because the card behind it takes a few
+                        seconds to compile and a frozen stage reads as a stall. */}
+                    <span className="flex h-16 w-60 items-center justify-center rounded-xl bg-ink/85 px-3 font-mono text-[11px] leading-relaxed text-cream">
+                      <AnimatePresence mode="wait">
+                        <motion.span
+                          key={hint}
+                          initial={reduce ? false : { opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={reduce ? {} : { opacity: 0, y: -8 }}
+                          transition={{ duration: 0.32 }}
+                        >
+                          {HINTS[hint]}
+                        </motion.span>
+                      </AnimatePresence>
+                    </span>
+                  </motion.label>
+                )}
+              </AnimatePresence>
+
+              <AnimatePresence>
+                {busy && (
+                  <motion.div
+                    key="busy"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    className="absolute inset-0 flex items-center justify-center bg-ink/85"
+                  >
+                    <p role="status" className="font-mono text-sm tracking-widest text-yellow uppercase">
+                      {busy}…
+                    </p>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </div>
+            <span
+              aria-hidden="true"
+              className="slats w-7 shrink-0 rounded-lg border-4 border-outline bg-yellow sm:w-11"
+            />
           </div>
 
           <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <div role="group" aria-label="Preview style" className="flex gap-1 rounded-full border-2 border-line bg-deep p-1">
+            <div role="group" aria-label="Preview style" className="flex gap-1 rounded-full border-2 border-outline bg-cream p-1">
               {([[true, "3D"], [false, "Flat"]] as const).map(([on, text]) => (
                 <button
                   key={text}
@@ -507,29 +472,18 @@ export function Studio() {
                   aria-pressed={view3d === on}
                   onClick={() => setView3d(on)}
                   className={`cursor-pointer rounded-full px-4 py-1.5 font-mono text-xs font-bold tracking-widest uppercase transition-colors ${
-                    view3d === on ? "bg-yellow text-ink" : "text-sea hover:text-yellow"
+                    view3d === on
+                      ? "bg-yellow text-ink shadow-[2px_2px_0_var(--color-outline)]"
+                      : "text-ink hover:bg-sand"
                   }`}
                 >
                   {text}
                 </button>
               ))}
             </div>
-            {credits.length > 0 && view3d && (
-              <p className="font-mono text-[11px] text-sea">
-                {credits.map((c, i) => (
-                  <span key={c.key}>
-                    {i > 0 && " · "}
-                    <a href={c.url} className="underline underline-offset-2 hover:text-yellow">
-                      {c.title}
-                    </a>{" "}
-                    by {c.author} ({c.license})
-                  </span>
-                ))}
-              </p>
-            )}
           </div>
 
-          {photo && mode !== "team" && (
+          {photo && (
             <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
               <label className="flex flex-1 items-center gap-3">
                 <span className="flex items-center gap-2 font-mono text-xs tracking-widest text-sea uppercase">
@@ -543,7 +497,7 @@ export function Studio() {
                   step={0.02}
                   value={crop.zoom}
                   onChange={(e) => setCrop((c) => ({ ...c, zoom: +e.target.value }))}
-                  className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-panel"
+                  className="h-2.5 flex-1 cursor-pointer appearance-none rounded-full border-2 border-outline bg-sand"
                 />
               </label>
               <p className="font-mono text-xs text-sea">
@@ -554,9 +508,16 @@ export function Studio() {
         </div>
 
         {/* ------------------------------------------------------------ panel */}
+        {/* The controls live in the house from the event artwork: terracotta
+            roof on top, whitewashed wall behind the fields, sand at the foot. */}
         <div className="flex flex-col gap-5 lg:col-span-5">
-          {mode !== "team" && (
-            <div className="rounded-2xl border-2 border-line bg-deep p-5">
+          <div className="overflow-hidden rounded-2xl border-4 border-outline bg-cream">
+            <div
+              aria-hidden="true"
+              className="tiles h-11 border-b-4 border-outline bg-pink"
+            />
+
+            <div className="flex flex-col gap-5 p-5">
               <input
                 id={`${uid}-file`}
                 ref={fileRef}
@@ -568,21 +529,27 @@ export function Studio() {
                   e.target.value = "";
                 }}
               />
-              <button
-                type="button"
-                onClick={() => fileRef.current?.click()}
-                className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-full bg-yellow px-5 py-3 font-mono text-sm font-bold tracking-widest text-ink uppercase transition-transform hover:scale-[1.02]"
-              >
-                <PlusIcon size={16} weight="bold" aria-hidden="true" />
-                {photo ? "Change photo" : "Choose photo"}
-              </button>
-            </div>
-          )}
+              <div className="flex items-stretch gap-2">
+                <span
+                  aria-hidden="true"
+                  className="slats w-4 shrink-0 rounded border-2 border-outline bg-pink"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileRef.current?.click()}
+                  className="flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-full border-4 border-outline bg-yellow px-5 py-3 font-mono text-sm font-bold tracking-widest text-ink uppercase shadow-[3px_3px_0_var(--color-outline)] transition-transform hover:-translate-y-0.5"
+                >
+                  <PlusIcon size={16} weight="bold" aria-hidden="true" />
+                  {photo ? "Change photo" : "Choose photo"}
+                </button>
+                <span
+                  aria-hidden="true"
+                  className="slats w-4 shrink-0 rounded border-2 border-outline bg-yellow"
+                />
+              </div>
 
-          {mode === "id" && (
-            <div className="flex flex-col gap-4 rounded-2xl border-2 border-line bg-deep p-5">
               <div>
-                <p className="font-mono text-xs tracking-widest text-sea uppercase">
+                <p className="font-mono text-xs font-bold tracking-widest text-ink uppercase">
                   Pass shape
                 </p>
                 <div role="group" aria-label="Pass shape" className="mt-2 flex gap-2">
@@ -595,10 +562,10 @@ export function Studio() {
                       type="button"
                       aria-pressed={shape === id}
                       onClick={() => setShape(id)}
-                      className={`flex-1 cursor-pointer rounded-lg border-2 px-3 py-2 font-mono text-xs font-bold tracking-wide uppercase transition-colors ${
+                      className={`flex-1 cursor-pointer rounded-lg border-2 border-outline px-3 py-2 font-mono text-xs font-bold tracking-wide text-ink uppercase transition-colors ${
                         shape === id
-                          ? "border-yellow bg-yellow text-ink"
-                          : "border-line text-sea hover:border-yellow"
+                          ? "bg-yellow shadow-[3px_3px_0_var(--color-outline)]"
+                          : "bg-cream hover:bg-sand"
                       }`}
                     >
                       {text}
@@ -612,7 +579,7 @@ export function Studio() {
                 label="Name"
                 value={name}
                 onChange={setName}
-                placeholder="Asha Menon"
+                placeholder="Akshat Kansal"
                 max={22}
                 autoComplete="name"
               />
@@ -621,123 +588,36 @@ export function Studio() {
                 label="Stack / role"
                 value={stack}
                 onChange={setStack}
-                placeholder="Rust · zk · half a designer"
+                placeholder="MERN · :) · half a designer"
                 max={28}
               />
               <div>
-                <p className="font-mono text-xs tracking-widest text-sea uppercase">
+                <p className="font-mono text-xs font-bold tracking-widest text-ink uppercase">
                   Builder title
                 </p>
                 <div className="mt-2 flex items-center gap-3">
-                  <span className="flex-1 rounded-full border-2 border-pink bg-ink px-4 py-2 font-mono text-sm font-bold text-pink">
+                  {/* Sand fill, ink type: 4.9:1. Pink is 1.8:1 against both
+                      green and cream, so it stays a keyline and a fill only. */}
+                  <span className="flex-1 rounded-full border-2 border-outline bg-sand px-4 py-2 font-mono text-sm font-bold text-ink">
                     {title}
                   </span>
                   <button
                     type="button"
                     onClick={() => setSalt((s) => s + 1)}
                     aria-label="Generate a different builder title"
-                    className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-line text-sea transition-colors hover:border-yellow hover:text-yellow"
+                    className="flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 border-outline bg-cream text-ink transition-colors hover:bg-pink hover:text-cream"
                   >
                     <ArrowClockwiseIcon size={16} weight="bold" aria-hidden="true" />
                   </button>
                 </div>
               </div>
             </div>
-          )}
 
-          {mode === "team" && (
-            <div className="flex flex-col gap-4 rounded-2xl border-2 border-line bg-deep p-5">
-              <Field
-                id={`${uid}-team`}
-                label="Team name"
-                value={teamName}
-                onChange={setTeamName}
-                placeholder="Sandbox Syndicate"
-                max={20}
-              />
-              <input
-                ref={teamFileRef}
-                type="file"
-                accept="image/*,.heic,.heif"
-                className="sr-only"
-                onChange={(e) => {
-                  takeFile(e.target.files?.[0], teamTargetRef.current);
-                  e.target.value = "";
-                }}
-              />
-              <ul className="flex flex-col gap-3">
-                {team.map((slot, i) => (
-                  <li key={i} className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        teamTargetRef.current = i;
-                        teamFileRef.current?.click();
-                      }}
-                      className="h-12 w-12 shrink-0 cursor-pointer overflow-hidden rounded-full border-2 border-line bg-panel"
-                      aria-label={
-                        slot.photo
-                          ? `Change photo for builder ${i + 1}`
-                          : `Add photo for builder ${i + 1}`
-                      }
-                    >
-                      {slot.photo ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={slot.photo.thumb}
-                          alt=""
-                          width={48}
-                          height={48}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <PlusIcon size={16} weight="bold" aria-hidden="true" className="mx-auto text-sea" />
-                      )}
-                    </button>
-                    <input
-                      value={slot.name}
-                      maxLength={14}
-                      placeholder={`Builder ${i + 1}`}
-                      aria-label={`Name for builder ${i + 1}`}
-                      autoComplete="off"
-                      spellCheck={false}
-                      onChange={(e) =>
-                        setTeam((prev) =>
-                          prev.map((s, j) => (j === i ? { ...s, name: e.target.value } : s)),
-                        )
-                      }
-                      className="min-w-0 flex-1 rounded-lg border-2 border-line bg-panel px-3 py-2 font-mono text-sm text-cream placeholder:text-sea/70"
-                    />
-                    {team.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setTeam((prev) => {
-                            prev[i].photo?.img.close();
-                            return prev.filter((_, j) => j !== i);
-                          })
-                        }
-                        aria-label={`Remove builder ${i + 1}`}
-                        className="shrink-0 cursor-pointer p-2 text-sea transition-colors hover:text-pink"
-                      >
-                        <TrashIcon size={18} weight="bold" aria-hidden="true" />
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-              {team.length < TEAM_MAX && (
-                <button
-                  type="button"
-                  onClick={() => setTeam((prev) => [...prev, { photo: null, name: "" }])}
-                  className="flex cursor-pointer items-center justify-center gap-2 rounded-full border-2 border-dashed border-line px-4 py-2 font-mono text-xs font-bold tracking-widest text-sea uppercase transition-colors hover:border-yellow hover:text-yellow"
-                >
-                  <PlusIcon size={14} weight="bold" aria-hidden="true" />
-                  Add builder
-                </button>
-              )}
-            </div>
-          )}
+            <div
+              aria-hidden="true"
+              className="h-6 border-t-4 border-outline bg-sand"
+            />
+          </div>
 
           {error && (
             <p
@@ -754,7 +634,7 @@ export function Studio() {
               type="button"
               onClick={download}
               disabled={!hasArt}
-              className="flex cursor-pointer items-center justify-center gap-2 rounded-full bg-yellow px-5 py-4 font-mono text-sm font-bold tracking-widest text-ink uppercase transition-transform not-disabled:hover:scale-[1.02] disabled:cursor-not-allowed disabled:bg-panel disabled:text-sea"
+              className="flex cursor-pointer items-center justify-center gap-2 rounded-full border-4 border-outline bg-yellow px-5 py-4 font-mono text-sm font-bold tracking-widest text-ink uppercase shadow-[4px_4px_0_var(--color-outline)] transition-transform not-disabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:bg-panel disabled:text-sea disabled:shadow-none"
             >
               <DownloadSimpleIcon size={18} weight="bold" aria-hidden="true" />
               Download PNG
@@ -763,7 +643,7 @@ export function Studio() {
               type="button"
               onClick={shareToX}
               disabled={!hasArt || !!busy}
-              className="flex cursor-pointer items-center justify-center gap-2 rounded-full border-2 border-cream bg-cream px-5 py-4 font-mono text-sm font-bold tracking-widest text-ink uppercase transition-transform not-disabled:hover:scale-[1.02] disabled:cursor-not-allowed disabled:border-line disabled:bg-panel disabled:text-sea"
+              className="flex cursor-pointer items-center justify-center gap-2 rounded-full border-4 border-outline bg-cream px-5 py-4 font-mono text-sm font-bold tracking-widest text-ink uppercase shadow-[4px_4px_0_var(--color-outline)] transition-transform not-disabled:hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:bg-panel disabled:text-sea disabled:shadow-none"
             >
               <XLogoIcon size={16} weight="bold" aria-hidden="true" />
               Share to X
@@ -773,7 +653,7 @@ export function Studio() {
                 type="button"
                 onClick={shareNative}
                 disabled={!hasArt}
-                className="cursor-pointer rounded-full border-2 border-line px-5 py-3 font-mono text-xs font-bold tracking-widest text-sea uppercase hover:border-yellow hover:text-yellow disabled:border-line disabled:text-sea/50"
+                className="cursor-pointer rounded-full border-2 border-outline bg-sand px-5 py-3 font-mono text-xs font-bold tracking-widest text-ink uppercase hover:bg-yellow disabled:bg-panel disabled:text-sea"
               >
                 Share image directly
               </button>
@@ -818,7 +698,7 @@ function Field({
 }) {
   return (
     <label htmlFor={id} className="block">
-      <span className="font-mono text-xs tracking-widest text-sea uppercase">
+      <span className="font-mono text-xs font-bold tracking-widest text-ink uppercase">
         {label}
       </span>
       <input
@@ -829,7 +709,7 @@ function Field({
         autoComplete={autoComplete}
         spellCheck={false}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-2 w-full rounded-lg border-2 border-line bg-panel px-4 py-3 font-mono text-base text-cream placeholder:text-sea/70 focus:border-yellow"
+        className="mt-2 w-full rounded-lg border-2 border-outline bg-cream px-4 py-3 font-mono text-base text-ink placeholder:text-ink/55 focus:bg-sand"
       />
     </label>
   );
