@@ -21,7 +21,7 @@ import {
   type RefObject,
 } from "react";
 import { Canvas, useFrame, useLoader, useThree } from "@react-three/fiber";
-import { useAnimations, useGLTF } from "@react-three/drei";
+import { useAnimations, useGLTF, useProgress } from "@react-three/drei";
 import * as THREE from "three";
 import { MODELS, type Credit, type Slot } from "@/lib/models";
 
@@ -726,6 +726,20 @@ function Ready({ onReady }: { onReady?: () => void }) {
   return null;
 }
 
+/**
+ * Feeds the loader real load progress. Lives outside the Suspense boundary so
+ * it keeps rendering while the models below it are still in flight, and writes
+ * to a ref rather than state: this fires once per asset and the loader reads it
+ * from its own rAF loop, so a React render per file would buy nothing.
+ */
+function Progress({ outRef }: { outRef?: RefObject<number> }) {
+  const { progress } = useProgress();
+  useEffect(() => {
+    if (outRef) outRef.current = progress;
+  }, [progress, outRef]);
+  return null;
+}
+
 /* ----------------------------------------------------------------- scene */
 
 // Material names come from shack.glb. Glass is left alone. Module scope: a fresh
@@ -742,10 +756,12 @@ export default function BeachScene({
   progress,
   still = false,
   onReady,
+  loadPct,
 }: {
   progress: RefObject<number>;
   still?: boolean;
   onReady?: () => void;
+  loadPct?: RefObject<number>;
 }) {
   const get = fileFor;
   // Off until the shaders are linked; Ready flips this. It has to be the prop
@@ -790,6 +806,7 @@ export default function BeachScene({
         <SkyImage />
       </Suspense>
       <Rig progress={progress} still={still} />
+      <Progress outRef={loadPct} />
 
       <Suspense fallback={null}>
         <Sea url={get("water")} still={still} />

@@ -96,19 +96,11 @@ input[type="range"] {
   box-shadow: inset 0 -0.7rem 0 -0.6rem var(--color-outline);
 }
 
-/* Loading screen. The still is one flat illustration, so the only way to say
-   "still working" is to move the frame itself and put a live caption on it. */
-@keyframes drift {
-  from { transform: scale(1.06) translate3d(0, 0, 0); }
-  to   { transform: scale(1.14) translate3d(-2%, -1.5%, 0); }
-}
-@keyframes sweep {
-  from { transform: translateX(-110%); }
-  to   { transform: translateX(340%); }
-}
-@keyframes riseIn {
-  from { opacity: 0; transform: translateY(0.6em); }
-  to   { opacity: 1; transform: none; }
+/* Loading screen: water lines drifting across the unprinted sheet. Half the
+   width is one full wave period, so the wrap has no visible seam. */
+@keyframes swim {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
 }
 
 :where(a, button, input, select, [tabindex]):focus-visible {

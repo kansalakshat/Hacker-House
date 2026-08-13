@@ -22,6 +22,7 @@ import Lenis from "lenis";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { EVENT } from "@/lib/render";
+import { Loader } from "@/components/Loader";
 
 const BeachScene = dynamic(() => import("@/components/BeachScene"), {
   ssr: false,
@@ -54,44 +55,6 @@ const STOPS = [
   },
 ];
 
-const LOADING_LINES = [
-  "Raking the sand",
-  "Planting the palms",
-  "Waxing the boards",
-  "Winding up the sun",
-  "Pushing the boat out",
-  "Pouring the sea",
-];
-
-/**
- * Sits on the still while the models load. The still itself is a flat
- * illustration, so without this the page looks frozen for the whole wait.
- */
-function Loader() {
-  const [i, setI] = useState(0);
-  useEffect(() => {
-    const t = setInterval(() => setI((n) => n + 1), 1600);
-    return () => clearInterval(t);
-  }, []);
-
-  return (
-    <div className="absolute bottom-[13%] left-5 sm:left-8">
-      <p className="font-mono text-[10px] tracking-[0.3em] text-yellow uppercase [text-shadow:0_1px_8px_rgba(3,8,10,0.9)]">
-        ✦ Loading the beach
-      </p>
-      <p
-        key={i}
-        className="mt-3 font-mono text-sm text-white [animation:riseIn_.5s_ease-out] [text-shadow:0_1px_10px_rgba(3,8,10,0.9)] sm:text-base"
-      >
-        {LOADING_LINES[i % LOADING_LINES.length]}…
-      </p>
-      <div className="mt-4 h-px w-44 overflow-hidden bg-white/25 sm:w-56">
-        <div className="h-full w-1/3 bg-yellow [animation:sweep_1.6s_ease-in-out_infinite]" />
-      </div>
-    </div>
-  );
-}
-
 export function Journey() {
   const wrap = useRef<HTMLDivElement>(null);
   const progress = useRef(0);
@@ -102,6 +65,11 @@ export function Journey() {
   // screen, which is a good deal later and is what the still waits for.
   const [sceneReady, setSceneReady] = useState(false);
   const handleReady = useCallback(() => setSceneReady(true), []);
+  // Live 0..100 written by the scene's own loader, read by the loading screen's
+  // rAF. A ref, so a file landing never costs a render of the canvas above.
+  const loadPct = useRef(0);
+  // Drops the loading screen once its fade has finished.
+  const [gone, setGone] = useState(false);
 
   const reduced = useSyncExternalStore(
     subscribeMotion,
@@ -135,6 +103,12 @@ export function Journey() {
       return () => clearTimeout(t);
     }
   }, [loaded]);
+
+  useEffect(() => {
+    if (!sceneReady) return;
+    const t = setTimeout(() => setGone(true), 800);
+    return () => clearTimeout(t);
+  }, [sceneReady]);
 
   // If a model never resolves, the still would hold the page forever. Hand over
   // regardless after 12s: a half-dressed beach beats a frozen one.
@@ -211,6 +185,7 @@ export function Journey() {
                 progress={progress}
                 still={reduced}
                 onReady={handleReady}
+                loadPct={loadPct}
               />
             )}
           </div>
@@ -218,15 +193,20 @@ export function Journey() {
               models are in. Underneath, the canvas paints its own sky the moment
               it mounts, which is the pale blue flash that used to show through. */}
           <div
-            aria-hidden="true"
-            className={`pointer-events-none absolute inset-0 overflow-hidden transition-opacity duration-700 ${
-              sceneReady ? "opacity-0" : "opacity-100"
+            className={`absolute inset-0 transition-opacity duration-700 ${
+              sceneReady ? "pointer-events-none opacity-0" : "opacity-100"
             }`}
           >
-            <div className="absolute inset-0 bg-[url('/default.webp')] bg-cover bg-center [animation:drift_16s_ease-in-out_infinite_alternate]" />
-            {/* The bottom of the still is white houses; the caption needs a floor. */}
-            <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-ink/85 to-transparent" />
-            {!sceneReady && <Loader />}
+            {/* Kept mounted through the fade: unmounting on sceneReady would
+                leave the transition with nothing to fade out. */}
+            {!gone && (
+              <Loader
+                pct={loadPct}
+                ready={sceneReady}
+                onSkip={handleReady}
+                reduced={reduced}
+              />
+            )}
           </div>
           <div
             aria-hidden="true"
